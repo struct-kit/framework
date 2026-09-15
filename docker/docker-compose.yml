@@ -1,0 +1,104 @@
+# docker/docker-compose.yml
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: struct-framework-api:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      APP_ENV: development
+      APP_NAME: struct-framework
+      APP_VERSION: "1.0.0"
+      SERVICE_NAME: struct-framework
+      PORT: "8080"
+      DB_DRIVER: ${DB_DRIVER:-postgres}   # or: mysql, memory
+      DATABASE_URL: ${DATABASE_URL:-postgres://svc:secret@postgres:5432/svc?sslmode=disable}
+      MESSAGE_BROKER: ${MESSAGE_BROKER:-memory}
+      BROKER_URL: ${BROKER_URL:-redis://redis:6379/0}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      DEFAULT_LOCALE: en
+      SUPPORTED_LOCALES: en,es
+      LOG_LEVEL: debug
+      PPROF_ENABLED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+      mysql:
+        condition: service_healthy
+        required: false
+      redis:
+        condition: service_healthy
+        required: false
+    healthcheck:
+      test: ["CMD", "/app/struct", "health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: svc
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secret}
+      POSTGRES_DB: svc
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U svc"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  mysql:
+    image: mysql:9
+    restart: unless-stopped
+    environment:
+      MYSQL_USER: svc
+      MYSQL_PASSWORD: ${DB_PASSWORD:-secret}
+      MYSQL_DATABASE: svc
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootsecret}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysqldata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:
+  mysqldata:
+  redisdata:

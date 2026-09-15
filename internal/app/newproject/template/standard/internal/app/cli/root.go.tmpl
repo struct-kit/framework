@@ -1,0 +1,18 @@
+package cli
+
+func NewRootCommand() *Command {
+	root := &Command{
+		Use:   "struct",
+		Short: "Struct — a typed-first Go microservice framework",
+	}
+
+	root.AddCommand(
+		newServeCmd(),
+		newRoutesCmd(),
+		newHealthCmd(),
+		newVersionCmd(),
+		newAboutCmd(),
+		newDoctorCmd(),
+	)
+	return root
+}

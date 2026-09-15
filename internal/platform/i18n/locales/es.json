@@ -1,0 +1,4 @@
+{
+  "errors.invalid_request_body": "cuerpo de la solicitud no válido",
+  "errors.authentication_required": "se requiere autenticación"
+}

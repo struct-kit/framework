@@ -1,0 +1,64 @@
+// Package apperr defines the typed error contract shared between services
+// and controllers. Services never return raw fmt.Errorf strings for
+// expected failure modes — they return one of these sentinel-wrapped kinds,
+// and the HTTP layer maps each kind to a status code in exactly one place.
+package apperr
+
+import (
+	"errors"
+	"fmt"
+)
+
+type Kind int
+
+const (
+	KindUnknown Kind = iota
+	KindNotFound
+	KindConflict
+	KindValidation
+	KindUnauthorized
+	KindForbidden
+	KindLocked
+)
+
+// Error is the typed application error. Callers should use errors.As to
+// recover the Kind and Fields rather than string-matching Error().
+type Error struct {
+	Kind    Kind
+	Message string
+	Fields  map[string]string // field -> validation message, for KindValidation
+	cause   error
+}
+
+func (e *Error) Error() string {
+	if e.cause != nil {
+		return fmt.Sprintf("%s: %v", e.Message, e.cause)
+	}
+	return e.Message
+}
+
+func (e *Error) Unwrap() error { return e.cause }
+
+func NotFound(msg string) *Error       { return &Error{Kind: KindNotFound, Message: msg} }
+func Conflict(msg string) *Error       { return &Error{Kind: KindConflict, Message: msg} }
+func Unauthorized(msg string) *Error   { return &Error{Kind: KindUnauthorized, Message: msg} }
+func Forbidden(msg string) *Error      { return &Error{Kind: KindForbidden, Message: msg} }
+func Locked(msg string) *Error         { return &Error{Kind: KindLocked, Message: msg} }
+
+func Validation(fields map[string]string) *Error {
+	return &Error{Kind: KindValidation, Message: "validation failed", Fields: fields}
+}
+
+func Wrap(kind Kind, msg string, cause error) *Error {
+	return &Error{Kind: kind, Message: msg, cause: cause}
+}
+
+// As is a small convenience wrapper around errors.As for the common case of
+// pulling an *Error out of an error chain.
+func As(err error) (*Error, bool) {
+	var e *Error
+	if errors.As(err, &e) {
+		return e, true
+	}
+	return nil, false
+}

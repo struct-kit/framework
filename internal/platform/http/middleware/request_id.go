@@ -1,0 +1,52 @@
+package middleware
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"net/http"
+
+	"struct-framework/internal/platform/http/appctx"
+)
+
+type contextKey string
+
+const requestIDKey contextKey = "request_id"
+const RequestIDHeader = "X-Request-ID"
+
+// RequestID assigns a correlation ID to every request — reusing one
+// supplied by an upstream caller (so traces stay joined across service
+// boundaries, per §6.4/§13) or generating a new one otherwise — and
+// attaches it to both the response header, the request context, and AppContext.
+func RequestID() Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			id := r.Header.Get(RequestIDHeader)
+			if id == "" {
+				id = generateRequestID()
+			}
+			w.Header().Set(RequestIDHeader, id)
+			ctx := context.WithValue(r.Context(), requestIDKey, id)
+			ctx = appctx.WithRequestID(ctx, id)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// RequestIDFrom retrieves the correlation ID attached by RequestID, or ""
+// if none is present (e.g. in a unit test that doesn't run the middleware).
+func RequestIDFrom(ctx context.Context) string {
+	if id := appctx.RequestID(ctx); id != "" {
+		return id
+	}
+	id, _ := ctx.Value(requestIDKey).(string)
+	return id
+}
+
+func generateRequestID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "unknown"
+	}
+	return hex.EncodeToString(b)
+}

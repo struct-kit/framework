@@ -1,0 +1,78 @@
+package http
+
+import (
+	"log/slog"
+	"net/http"
+	"time"
+
+	"__MODULE_PLACEHOLDER__/internal/mvc/controllers"
+	"__MODULE_PLACEHOLDER__/internal/platform/config"
+	"__MODULE_PLACEHOLDER__/internal/platform/http/middleware"
+)
+
+// Controllers is the single source of truth for controller wiring, shared
+// by cmd/api and the CLI's `struct routes` command (which needs the exact
+// same route table without ever binding a socket).
+type Controllers struct {
+	User *controllers.UserController
+}
+
+// BuildHandler assembles the ServeMux and wraps it in the full middleware
+// chain, in the order specified by the framework guide (§6.3): panic
+// recovery first, then correlation/identity concerns, then security and
+// abuse-prevention, then observability, then the request timeout.
+func BuildHandler(cfg config.Config, logger *slog.Logger, c Controllers) http.Handler {
+	mux := http.NewServeMux()
+	registerRoutes(mux, c)
+
+	limiter := middleware.NewIPRateLimiter(cfg.RateLimitRPS)
+
+	return middleware.Chain(mux,
+		middleware.Recover(logger),
+		middleware.RequestID(),
+		middleware.RealIP(),
+		middleware.SecurityHeaders(),
+		limiter.Middleware(),
+		middleware.CORS(nil), // nil = no cross-origin browser access by default; pass an explicit allowlist to enable
+		middleware.AccessLog(logger),
+		middleware.Timeout(10*time.Second),
+	)
+}
+
+func registerRoutes(mux *http.ServeMux, c Controllers) {
+	for _, rt := range Routes(c) {
+		mux.HandleFunc(rt.Method+" "+rt.Path, rt.Handler)
+	}
+}
+
+// Route is one entry in the declarative route table. Routes builds this
+// table once; both registerRoutes (used by cmd/api and `struct serve`) and
+// `struct routes` (which never binds a socket) read from it, so the two
+// can never drift apart.
+type Route struct {
+	Method  string
+	Path    string
+	Handler http.HandlerFunc
+}
+
+func Routes(c Controllers) []Route {
+	return []Route{
+		{Method: "GET", Path: "/healthz", Handler: handleHealthz},
+		{Method: "GET", Path: "/readyz", Handler: handleReadyz},
+		{Method: "POST", Path: "/v1/users", Handler: c.User.Create},
+		{Method: "GET", Path: "/v1/users/{id}", Handler: c.User.Get},
+	}
+}
+
+func handleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// handleReadyz is liveness-only in the bootstrap slice (no database wired
+// yet). Pass 3 (the store layer) upgrades this to a bounded-timeout DB ping
+// that returns 503 when the backing store is unreachable, per §13.
+func handleReadyz(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ready"}`))
+}

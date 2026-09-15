@@ -1,0 +1,29 @@
+package cli
+
+import (
+	"fmt"
+
+	"__MODULE_PLACEHOLDER__/internal/app"
+	"__MODULE_PLACEHOLDER__/internal/platform/config"
+)
+
+func newRoutesCmd() *Command {
+	return &Command{
+		Use:   "routes",
+		Short: "Print the registered route table (method, path) — no socket bound",
+		Run: func(args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return fmt.Errorf("cli: load config: %w", err)
+			}
+			a, err := app.Build(cfg)
+			if err != nil {
+				return fmt.Errorf("cli: build app: %w", err)
+			}
+			for _, r := range a.Routes() {
+				fmt.Printf("%-6s %s\n", r.Method, r.Path)
+			}
+			return nil
+		},
+	}
+}

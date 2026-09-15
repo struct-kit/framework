@@ -1,0 +1,35 @@
+// Package logging builds the process-wide structured logger: JSON output in
+// production, human-readable text in development, with the service name
+// attached to every line.
+package logging
+
+import (
+	"log/slog"
+	"os"
+
+	"__MODULE_PLACEHOLDER__/internal/platform/config"
+)
+
+// New builds a *slog.Logger configured from cfg. It never panics on a bad
+// LogLevel value — it falls back to Info instead, since a misconfigured log
+// level should never prevent a service from starting.
+func New(cfg config.Config) *slog.Logger {
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
+		level = slog.LevelInfo
+	}
+
+	opts := &slog.HandlerOptions{
+		Level:     level,
+		AddSource: !cfg.IsProduction(),
+	}
+
+	var handler slog.Handler
+	if cfg.IsProduction() {
+		handler = slog.NewJSONHandler(os.Stdout, opts)
+	} else {
+		handler = slog.NewTextHandler(os.Stdout, opts)
+	}
+
+	return slog.New(handler).With("service", cfg.ServiceName)
+}

@@ -1,0 +1,29 @@
+package http
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"net/http"
+	"time"
+
+	"struct-framework/internal/platform/config"
+)
+
+// NewServer builds an *http.Server with hard timeouts on every phase of a
+// request, preventing slowloris-style resource exhaustion from a client
+// that opens a connection and then trickles bytes.
+func NewServer(cfg config.Config, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              fmt.Sprintf(":%d", cfg.Port),
+		Handler:           handler,
+		ReadTimeout:       cfg.ReadTimeout,
+		ReadHeaderTimeout: 3 * time.Second,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MB
+		BaseContext: func(net.Listener) context.Context {
+			return context.Background()
+		},
+	}
+}

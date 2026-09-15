@@ -1,0 +1,6 @@
+/bin/
+/build/
+/tmp/
+.env
+.env.*
+!*.env.example

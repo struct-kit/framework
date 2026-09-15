@@ -1,0 +1,16 @@
+# {{ProjectName}}
+
+A Struct microservice scaffolded from the `minimal` template: a single-file
+middleware chain (panic recovery, access logging), no MVC slice. Good for
+throwaway prototypes and CLI-only tools.
+
+## Running it
+
+```bash
+go build ./...
+go run ./cmd/api
+curl localhost:8080/healthz
+```
+
+Reach for `struct new <name> --template=standard` once this needs more
+than a couple of routes.

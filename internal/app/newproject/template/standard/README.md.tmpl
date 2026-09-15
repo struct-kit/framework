@@ -1,0 +1,37 @@
+# {{ProjectName}}
+
+A Struct microservice, scaffolded from the `standard` template: full
+middleware chain, one example MVC vertical slice (`User`, in-memory
+store), and the `struct` CLI.
+
+## Running it
+
+```bash
+go build ./...
+make run
+# or: APP_ENV=development LOG_LEVEL=debug go run ./cmd/api
+```
+
+```bash
+curl -X POST localhost:8080/v1/users \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com","password":"a-strong-password","locale":"en"}'
+
+curl localhost:8080/v1/users/<id-from-above>
+curl localhost:8080/healthz
+```
+
+## The `struct` CLI
+
+```bash
+go run ./cmd/struct doctor
+go run ./cmd/struct routes
+go run ./cmd/struct serve
+```
+
+This scaffold ships the Pass 1 command set (`serve`, `routes`, `health`,
+`version`, `about`, `doctor`). The full framework's codegen commands
+(`make model/controller/service/...`, `migrate`, `lint`) live in the
+Struct framework repository's own `internal/app/codegen` and
+`internal/app/cli` packages — copy those in if you want this project's
+own `struct` binary to scaffold further code for itself.

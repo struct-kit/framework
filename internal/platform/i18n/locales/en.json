@@ -1,0 +1,4 @@
+{
+  "errors.invalid_request_body": "invalid request body",
+  "errors.authentication_required": "authentication required"
+}

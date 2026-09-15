@@ -1,0 +1,27 @@
+package cli
+
+import (
+	"fmt"
+	"runtime"
+)
+
+// Version and Commit are overridden at build time via:
+//
+//	go build -ldflags "-X __MODULE_PLACEHOLDER__/internal/app/cli.Version=v0.1.0 -X __MODULE_PLACEHOLDER__/internal/app/cli.Commit=$(git rev-parse --short HEAD)"
+//
+// See the Makefile's `build` target.
+var (
+	Version = "dev"
+	Commit  = "unknown"
+)
+
+func newVersionCmd() *Command {
+	return &Command{
+		Use:   "version",
+		Short: "Print build version, commit SHA, and Go runtime version",
+		Run: func(args []string) error {
+			fmt.Printf("struct %s (%s) %s\n", Version, Commit, runtime.Version())
+			return nil
+		},
+	}
+}

@@ -1,0 +1,98 @@
+// Package main is the minimal Struct template: a single-file middleware
+// chain with no MVC slice, intended for throwaway prototypes and
+// CLI-only tools. Reach for `struct new --template=standard` once the
+// project needs more than a couple of routes.
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+)
+
+func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	handler := recoverMiddleware(logger)(accessLog(logger)(mux))
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	srv := &http.Server{
+		Addr:              ":" + port,
+		Handler:           handler,
+		ReadTimeout:       5 * time.Second,
+		ReadHeaderTimeout: 3 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		logger.Info("server starting", "port", port)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-errCh:
+		fmt.Fprintln(os.Stderr, "server error:", err)
+		os.Exit(1)
+	case <-stop:
+		logger.Info("shutdown signal received")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		logger.Error("graceful shutdown failed", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("shutdown complete")
+}
+
+func recoverMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					logger.Error("panic recovered", "panic", rec, "path", r.URL.Path)
+					w.WriteHeader(http.StatusInternalServerError)
+				}
+			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func accessLog(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			next.ServeHTTP(w, r)
+			logger.Info("http_request",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"duration_ms", time.Since(start).Milliseconds(),
+			)
+		})
+	}
+}

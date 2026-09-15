@@ -1,0 +1,63 @@
+package cli
+
+import (
+	"fmt"
+	"os"
+	"runtime"
+
+	"__MODULE_PLACEHOLDER__/internal/platform/config"
+)
+
+// newDoctorCmd implements framework guide §10.1's `struct doctor`. In this
+// bootstrap pass it checks what actually exists so far: the Go toolchain
+// and that config loads cleanly. Pass 3 (store layer) adds DATABASE_URL
+// reachability; Pass 5 (i18n) adds locale-catalog completeness — this
+// command is meant to grow with the framework, not be rewritten each time.
+func newDoctorCmd() *Command {
+	return &Command{
+		Use:   "doctor",
+		Short: "Check the local environment before you start developing",
+		Run: func(args []string) error {
+			ok := true
+
+			check("Go runtime", runtime.Version(), true)
+
+			cfg, err := config.Load()
+			if err != nil {
+				check("Configuration", err.Error(), false)
+				ok = false
+			} else {
+				check("Configuration", fmt.Sprintf("loaded (env=%s, port=%d)", cfg.Env, cfg.Port), true)
+				if cfg.IsProduction() {
+					secretsOK := cfg.JWTSigningKey != "" && cfg.EncryptionKey != ""
+					check("Production secrets (JWT_SIGNING_KEY, ENCRYPTION_KEY)", presence(secretsOK), secretsOK)
+					if !secretsOK {
+						ok = false
+					}
+				} else {
+					check("Production secrets", "skipped (APP_ENV is not production)", true)
+				}
+			}
+
+			if !ok {
+				return fmt.Errorf("doctor: one or more checks failed")
+			}
+			return nil
+		},
+	}
+}
+
+func check(name, detail string, ok bool) {
+	mark := "OK  "
+	if !ok {
+		mark = "FAIL"
+	}
+	fmt.Fprintf(os.Stdout, "[%s] %-45s %s\n", mark, name, detail)
+}
+
+func presence(ok bool) string {
+	if ok {
+		return "present"
+	}
+	return "missing"
+}

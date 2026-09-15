@@ -1,0 +1,97 @@
+// Package app is the composition root. cmd/api/main.go and the struct CLI
+// both call into this package so there is exactly one place that wires
+// config, logging, services, and controllers together — no drift between
+// what the server does and what the CLI does.
+package app
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"__MODULE_PLACEHOLDER__/internal/mvc/controllers"
+	"__MODULE_PLACEHOLDER__/internal/mvc/services"
+	"__MODULE_PLACEHOLDER__/internal/platform/config"
+	platformhttp "__MODULE_PLACEHOLDER__/internal/platform/http"
+	"__MODULE_PLACEHOLDER__/internal/platform/logging"
+)
+
+// App holds every long-lived dependency a running instance needs.
+type App struct {
+	Config      config.Config
+	Logger      *slog.Logger
+	Controllers platformhttp.Controllers
+}
+
+// Build wires every dependency from cfg. It is the one function shared by
+// cmd/api, `struct serve`, and `struct routes` (the latter never calls Run,
+// so it never binds a socket).
+func Build(cfg config.Config) (*App, error) {
+	logger := logging.New(cfg)
+
+	userSvc := BuildUserService(cfg)
+
+	return &App{
+		Config: cfg,
+		Logger: logger,
+		Controllers: platformhttp.Controllers{
+			User: controllers.NewUserController(userSvc),
+		},
+	}, nil
+}
+
+// BuildUserService selects the backing implementation for UserService.
+// Today only InMemoryUserService exists; Pass 3 adds
+// PostgresUserService/MySQLUserService here, selected by cfg.DBDriver —
+// nothing above this function changes when that lands.
+func BuildUserService(cfg config.Config) services.UserService {
+	return services.NewInMemoryUserService()
+}
+
+// Routes returns the declarative route table (method, path) without
+// binding a socket — used by `struct routes` so it stays instant/offline
+// even when a real DB_DRIVER is configured in a later pass.
+func (a *App) Routes() []platformhttp.Route {
+	return platformhttp.Routes(a.Controllers)
+}
+
+// Run starts the HTTP server and blocks until SIGINT/SIGTERM, then drains
+// in-flight requests within cfg.ShutdownTimeout before returning.
+func (a *App) Run(ctx context.Context) error {
+	handler := platformhttp.BuildHandler(a.Config, a.Logger, a.Controllers)
+	srv := platformhttp.NewServer(a.Config, handler)
+
+	errCh := make(chan error, 1)
+	go func() {
+		a.Logger.Info("server starting", "port", a.Config.Port, "env", a.Config.Env)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-stop:
+		a.Logger.Info("shutdown signal received")
+	case <-ctx.Done():
+		a.Logger.Info("context cancelled")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), a.Config.ShutdownTimeout)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		a.Logger.Error("graceful shutdown failed", "error", err)
+		return err
+	}
+	a.Logger.Info("shutdown complete")
+	return nil
+}

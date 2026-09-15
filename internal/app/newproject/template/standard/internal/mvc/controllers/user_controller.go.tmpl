@@ -1,0 +1,105 @@
+package controllers
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+
+	"__MODULE_PLACEHOLDER__/internal/mvc/apperr"
+	"__MODULE_PLACEHOLDER__/internal/mvc/models"
+	"__MODULE_PLACEHOLDER__/internal/mvc/views"
+)
+
+// UserService is the controller-side view of the service dependency —
+// deliberately re-declared here (rather than imported from services)
+// so this package depends only on a method set, never a concrete type.
+type UserService interface {
+	CreateUser(ctx context.Context, email, password, locale string) (models.User, error)
+	GetUser(ctx context.Context, id string) (models.User, error)
+}
+
+type UserController struct {
+	svc UserService
+}
+
+func NewUserController(svc UserService) *UserController {
+	return &UserController{svc: svc}
+}
+
+type createUserRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	Locale   string `json:"locale"`
+}
+
+func (c *UserController) Create(w http.ResponseWriter, r *http.Request) {
+	var req createUserRequest
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body", nil)
+		return
+	}
+
+	user, err := c.svc.CreateUser(r.Context(), req.Email, req.Password, req.Locale)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, views.FromUser(user))
+}
+
+func (c *UserController) Get(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing user id", nil)
+		return
+	}
+
+	user, err := c.svc.GetUser(r.Context(), id)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, views.FromUser(user))
+}
+
+func writeServiceError(w http.ResponseWriter, err error) {
+	appErr, ok := apperr.As(err)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "internal error", nil)
+		return
+	}
+	switch appErr.Kind {
+	case apperr.KindNotFound:
+		writeError(w, http.StatusNotFound, appErr.Message, nil)
+	case apperr.KindConflict:
+		writeError(w, http.StatusConflict, appErr.Message, nil)
+	case apperr.KindValidation:
+		writeError(w, http.StatusUnprocessableEntity, appErr.Message, appErr.Fields)
+	case apperr.KindUnauthorized:
+		writeError(w, http.StatusUnauthorized, appErr.Message, nil)
+	case apperr.KindForbidden:
+		writeError(w, http.StatusForbidden, appErr.Message, nil)
+	case apperr.KindLocked:
+		writeError(w, http.StatusLocked, appErr.Message, nil)
+	default:
+		writeError(w, http.StatusInternalServerError, "internal error", nil)
+	}
+}
+
+type errorResponse struct {
+	Error  string            `json:"error"`
+	Fields map[string]string `json:"fields,omitempty"`
+}
+
+func writeError(w http.ResponseWriter, status int, message string, fields map[string]string) {
+	writeJSON(w, status, errorResponse{Error: message, Fields: fields})
+}
+
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}

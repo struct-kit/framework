@@ -1,0 +1,121 @@
+// Package config loads all runtime configuration once, at startup, into a
+// single strict struct. No other package in this service is permitted to
+// call os.Getenv directly — every configurable value flows through Config.
+package config
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Config is the complete, validated runtime configuration for one Struct
+// service instance.
+type Config struct {
+	Env         string
+	ServiceName string
+	Port        int
+
+	// JWTSigningKey and EncryptionKey are required in production. Outside
+	// production they may be left unset; internal/app generates
+	// process-lifetime ephemeral keys instead, so local development needs
+	// zero extra configuration.
+	JWTSigningKey string
+	EncryptionKey string
+
+	DefaultLocale    string
+	SupportedLocales []string
+
+	ReadTimeout     time.Duration
+	WriteTimeout    time.Duration
+	ShutdownTimeout time.Duration
+	RateLimitRPS    int
+	LogLevel        string
+}
+
+// Load reads every configuration value from the process environment,
+// applies defaults, and validates production-only requirements.
+func Load() (Config, error) {
+	cfg := Config{
+		Env:              getString("APP_ENV", "production"),
+		ServiceName:      getString("SERVICE_NAME", "__MODULE_PLACEHOLDER__"),
+		Port:             getInt("PORT", 8080),
+		JWTSigningKey:    getString("JWT_SIGNING_KEY", ""),
+		EncryptionKey:    getString("ENCRYPTION_KEY", ""),
+		DefaultLocale:    getString("DEFAULT_LOCALE", "en"),
+		SupportedLocales: getStringSlice("SUPPORTED_LOCALES", []string{"en"}),
+		ReadTimeout:      getDuration("READ_TIMEOUT", 5*time.Second),
+		WriteTimeout:     getDuration("WRITE_TIMEOUT", 10*time.Second),
+		ShutdownTimeout:  getDuration("SHUTDOWN_TIMEOUT", 15*time.Second),
+		RateLimitRPS:     getInt("RATE_LIMIT_RPS", 20),
+		LogLevel:         getString("LOG_LEVEL", "info"),
+	}
+
+	if cfg.Env == "production" {
+		if cfg.JWTSigningKey == "" {
+			return Config{}, fmt.Errorf("config: JWT_SIGNING_KEY is required when APP_ENV=production")
+		}
+		if cfg.EncryptionKey == "" {
+			return Config{}, fmt.Errorf("config: ENCRYPTION_KEY is required when APP_ENV=production")
+		}
+	}
+	if cfg.Port <= 0 || cfg.Port > 65535 {
+		return Config{}, fmt.Errorf("config: PORT %d is out of range", cfg.Port)
+	}
+
+	return cfg, nil
+}
+
+func (c Config) IsProduction() bool { return c.Env == "production" }
+
+func getString(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		return v
+	}
+	return def
+}
+
+func getInt(key string, def int) int {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+func getDuration(key string, def time.Duration) time.Duration {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return def
+	}
+	return d
+}
+
+func getStringSlice(key string, def []string) []string {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return def
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return def
+	}
+	return out
+}
