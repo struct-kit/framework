@@ -39,7 +39,6 @@ LABEL org.opencontainers.image.title="struct-framework" \
 WORKDIR /app
 COPY --from=builder /out/struct-api /app/struct-api
 COPY --from=builder /out/struct /app/struct
-COPY --from=builder /src/migrations /app/migrations
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 USER nonroot:nonroot

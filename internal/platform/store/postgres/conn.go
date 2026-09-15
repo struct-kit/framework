@@ -24,8 +24,7 @@ type Conn struct {
 func connect(ctx context.Context, d dsn) (*Conn, error) {
 	if d.SSLMode != "" && d.SSLMode != "disable" {
 		return nil, fmt.Errorf(
-			"postgres: sslmode=%q requires TLS, which this build does not implement yet "+
-				"(see PLAN.md's Pass 3 scope note) — use sslmode=disable for now", d.SSLMode)
+			"postgres: sslmode=%q requires TLS, which this build does not implement yet — use sslmode=disable for now", d.SSLMode)
 	}
 
 	var dialer net.Dialer
@@ -88,9 +87,14 @@ func (c *Conn) startup(d dsn) error {
 }
 
 // handleAuth processes one AuthenticationXXX message, sending a
-// PasswordMessage in reply when the server challenges for one. Only
-// cleartext (code 3) and MD5 (code 5) are supported — see this package's
-// doc comment for why SCRAM-SHA-256 (code 10) is not.
+// PasswordMessage in reply when the server challenges for one.  Three
+// challenge/response protocols are supported:
+//   - code 0  AuthenticationOk              — auth complete, return nil
+//   - code 3  AuthenticationCleartextPassword — send password plaintext
+//   - code 5  AuthenticationMD5Password       — MD5(password, salt, user)
+//   - code 10 AuthenticationSASL              — SCRAM-SHA-256 full handshake
+//     (drives codes 11 (SASLContinue) and 12 (SASLFinal) internally
+//     before returning on AuthenticationOk).
 func (c *Conn) handleAuth(payload []byte, d dsn) error {
 	if len(payload) < 4 {
 		return fmt.Errorf("postgres: malformed authentication message")
@@ -108,10 +112,121 @@ func (c *Conn) handleAuth(payload []byte, d dsn) error {
 		var salt [4]byte
 		copy(salt[:], payload[4:8])
 		return c.sendPassword(hashMD5Password(d.User, d.Password, salt))
+	case 10: // AuthenticationSASL — start SCRAM-SHA-256 handshake
+		return c.handleSASL(payload[4:], d)
 	default:
 		return fmt.Errorf(
-			"postgres: unsupported authentication method %d — this build supports "+
-				"cleartext and MD5 only; SCRAM-SHA-256 is a documented gap (PLAN.md Pass 3)", code)
+			"postgres: unsupported authentication method %d — supported: cleartext(3), MD5(5), SCRAM-SHA-256(10)", code)
+	}
+}
+
+// handleSASL drives the full SCRAM-SHA-256 exchange: pick a mechanism, send
+// SASLInitialResponse → SASLContinue/SASLFinal round-trip → verify server
+// signature, and finally return when AuthenticationOk.  Any message that
+// doesn't match the expected sequence fails the connection with a descriptive
+// descriptive error.
+func (c *Conn) handleSASL(afterCode10 []byte, d dsn) error {
+	mechs, err := parseSASLMechanisms(afterCode10)
+	if err != nil {
+		return err
+	}
+	var chosen string
+	for _, m := range mechs {
+		if m == scramSHA256 {
+			chosen = m
+			break
+		}
+	}
+	if chosen == "" {
+		return fmt.Errorf("postgres: server offered SASL mechanisms %v — this driver only implements %q",
+			mechs, scramSHA256)
+	}
+
+	// ---- client-first: SASLInitialResponse ----
+	gs2AndBare, clientBare, err := scramClientFirst()
+	if err != nil {
+		return err
+	}
+	initPayload := buildSASLInitialResponse(chosen, []byte(gs2AndBare))
+	if err := c.writeMessage(msgPassword, initPayload); err != nil {
+		return fmt.Errorf("postgres: scram: sending SASLInitialResponse: %w", err)
+	}
+	if err := c.w.Flush(); err != nil {
+		return err
+	}
+
+	// ---- wait for server-first via AuthenticationSASLContinue (code 11) ----
+	respMsg, err := c.nextAuthMessage("SASLContinue")
+	if err != nil {
+		return err
+	}
+	serverFirst, err := extractSASLContinueData(respMsg.Payload)
+	if err != nil {
+		return err
+	}
+	combinedNonce, salt, iterations, err := scramServerFirst(serverFirst)
+	if err != nil {
+		return err
+	}
+
+	// ---- client-final: SASLResponse ----
+	clientFinalWire, expectedServerSig, err := scramClientFinal(
+		scramGS2Header, clientBare, combinedNonce, salt, iterations, d.Password,
+	)
+	if err != nil {
+		return err
+	}
+	if err := c.writeMessage(msgPassword, buildSASLResponse([]byte(clientFinalWire))); err != nil {
+		return fmt.Errorf("postgres: scram: sending SASLResponse: %w", err)
+	}
+	if err := c.w.Flush(); err != nil {
+		return err
+	}
+
+	// ---- wait for server-final via AuthenticationSASLFinal (code 12) ----
+	finalMsg, err := c.nextAuthMessage("SASLFinal")
+	if err != nil {
+		return err
+	}
+	serverFinal, err := extractSASLFinalData(finalMsg.Payload)
+	if err != nil {
+		return err
+	}
+	if err := scramVerifyServerFinal(serverFinal, expectedServerSig); err != nil {
+		return err
+	}
+
+	// ---- final AuthenticationOk (code 0) ----
+	okMsg, err := c.nextAuthMessage("AuthenticationOk")
+	if err != nil {
+		return err
+	}
+	if len(okMsg.Payload) < 4 {
+		return fmt.Errorf("postgres: scram: short AuthenticationOk")
+	}
+	if int32(binary.BigEndian.Uint32(okMsg.Payload[0:4])) != 0 {
+		return fmt.Errorf("postgres: scram: expected AuthenticationOk, got code %d",
+			int32(binary.BigEndian.Uint32(okMsg.Payload[0:4])))
+	}
+	return nil
+}
+
+// nextAuthMessage reads exactly one backend message, expecting it to be an
+// Authentication (type 'R').  Any other message (ErrorResponse, ReadyForQuery,
+// …) is surfaced with the supplied label.  Used by handleSASL for the multi-step
+// handshake.
+func (c *Conn) nextAuthMessage(label string) (rawMessage, error) {
+	msg, err := readMessage(c.r)
+	if err != nil {
+		return rawMessage{}, fmt.Errorf("postgres: scram: reading %s: %w", label, err)
+	}
+	switch msg.Type {
+	case msgAuth:
+		return msg, nil
+	case msgErrorResponse:
+		return rawMessage{}, parseErrorResponse(msg.Payload)
+	default:
+		return rawMessage{}, fmt.Errorf("postgres: scram: unexpected message %q while waiting for %s", msg.Type, label)
 	}
 }
 
