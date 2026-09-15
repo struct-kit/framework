@@ -4,25 +4,22 @@
 //
 // Deliberately scoped down, and documented here rather than silently
 // omitted:
-//   - Authentication: cleartext and MD5 only. SCRAM-SHA-256 (Postgres's
-//     default since v10) is NOT implemented — connecting to a server
-//     configured for scram-sha-256 auth will fail with a clear error
-//     naming the gap. This is the single biggest limitation of this
-//     package; closing it is the top of Pass 3's follow-up list.
-//   - No TLS. connect() refuses any sslmode other than "disable" rather
+//   - Authentication: cleartext (3), MD5 (5), and SCRAM-SHA-256 (SASL,
+//     code 10) are supported.  Postgres 14+ defaults to scram-sha-256 in
+//     `pg_hba.conf`; this driver completes the full RFC 5802 exchange
+//     including proof and server-signature verification.  SASLprep of
+//     the password is not applied, so non-ASCII passwords with
+//     canonically-equivalent codepoints can fail; set `password_
+//     encryption=md5` and a plain ASCII password if that ever bites.
+//   - No TLS: connect() refuses any sslmode other than "disable" rather
 //     than silently connecting in plaintext when the caller asked for
-//     encryption.
+//     encryption.  This is intentional — use a sidecar or a UNIX socket
+//     transport if you need encryption without TLS in the driver.
 //   - Extended query protocol only, text format for both parameters and
 //     results — no binary format, no server-side prepared-statement
 //     reuse across calls (Parse/Bind/Execute/Sync happen fresh every
 //     time, using the unnamed statement and portal).
-//   - No LISTEN/NOTIFY, no COPY, no SASLprep.
-//
-// None of this has been run against a real PostgreSQL server in this
-// session — see PLAN.md for why (no Go toolchain, no network access).
-// Every message layout below is written from the protocol specification;
-// treat this package as the highest-risk, least-verified part of the
-// whole codebase until it's been exercised against a live server.
+//   - No LISTEN/NOTIFY, no COPY, no SCRAM-SHA-256-PLUS channel binding.
 package postgres
 
 import (

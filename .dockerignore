@@ -1,0 +1,8 @@
+/bin/
+/build/
+/tmp/
+/docker/
+.env
+.env.*
+.gitignore
+README.md
